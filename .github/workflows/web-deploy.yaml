@@ -1,0 +1,63 @@
+---
+name: "[FrontEnd] Continuous Deployment to AWS S3"
+
+on:
+    push:
+        branches: [ main ]
+        paths:
+            - web/**
+
+jobs:
+    build-and-deploy:
+        if: startsWith(github.event.head_commit.message, 'release')
+        name: "Build and Deploy"
+        runs-on: ubuntu-latest
+        env:
+            AWS_REGION: "us-east-1"
+            AWS_S3_BUCKET: "checkers.lucastiberio.com"
+            AWS_CLOUDFRONT_DISTRIBUTION_ID: "EMV21SDI0ZD39"
+
+        steps:
+        - uses: actions/checkout@v2
+
+        - name: "Setup AWS Credentials"
+          uses: aws-actions/configure-aws-credentials@v1
+          with:
+            aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+            aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+            aws-region: ${{ env.AWS_REGION }}
+
+        - name: "Read .nvmrc"
+          run: "echo ::set-output name=NODE_VERSION::$(cat .nvmrc)"
+          id: nvm
+
+        - uses: actions/setup-node@v1
+          name: "Set Node version"
+          with:
+            node-version: ${{ steps.nvm.outputs.NODE_VERSION }}
+            registry-url: https://registry.npmjs.org/
+
+        # Below here is required to run on 'web' directory
+
+        - name: "Create .env file"
+          working-directory: ./web
+          run: |
+            touch .env
+            echo VITE_WS_BASE_URL=https://api-checkers.lucastiberio.com/socket.io >> .env
+            echo VITE_API_BASE_URL=https://api-checkers.lucastiberio.com/api >> .env
+
+        - name: "Install dependencies"
+          working-directory: ./web
+          run: "yarn cache clean && yarn install --frozen-lockfile"
+
+        - name: "Build React app"
+          working-directory: ./web
+          run: "yarn build --mode production"
+
+        - name: "Copy files to S3"
+          working-directory: ./web
+          run: "aws s3 sync dist s3://${{ env.AWS_S3_BUCKET }} --delete"
+
+        - name: "Invalidate CloudFront"
+          working-directory: ./web
+          run: "aws cloudfront create-invalidation --distribution-id ${{ env.AWS_CLOUDFRONT_DISTRIBUTION_ID }} --paths '/*'"

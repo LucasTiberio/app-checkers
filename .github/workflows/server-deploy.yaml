@@ -1,0 +1,59 @@
+---
+  name: "[BackEnd] Continuous Deployment to AWS EC2"
+  
+  on:
+      push:
+          branches: [ main ]
+          paths:
+              - server/**
+  
+  jobs:
+      build-and-deploy:
+          if: startsWith(github.event.head_commit.message, 'release')
+          name: "Build and Deploy"
+          runs-on: ubuntu-latest
+          env:
+            EC2_REMOTE_USER: "ubuntu"
+  
+          steps:
+          - uses: actions/checkout@v4
+  
+          - name: "Read .nvmrc"
+            run: "echo ::set-output name=NODE_VERSION::$(cat .nvmrc)"
+            id: nvm
+  
+          - uses: actions/setup-node@v1
+            name: "Set Node version"
+            with:
+              node-version: ${{ steps.nvm.outputs.NODE_VERSION }}
+              registry-url: https://registry.npmjs.org/
+  
+          # Below here is required to run on 'server' directory
+  
+          - uses: easingthemes/ssh-deploy@main
+            name: "Deploy to EC2"
+            with:
+              SSH_PRIVATE_KEY: ${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}
+              REMOTE_HOST: ${{ secrets.AWS_EC2_REMOTE_HOST }}
+              REMOTE_USER: ${{ env.EC2_REMOTE_USER }}
+              TARGET: "/home/${{ env.EC2_REMOTE_USER }}/app-checkers"
+              ARGS: "-rlgoDzvc -i --delete"
+              EXCLUDE: "/dist/, /node_modules/"
+              
+          - name: Execute remote ssh commands
+            uses: appleboy/ssh-action@master
+            with:
+              host: ${{ secrets.AWS_EC2_REMOTE_HOST }}
+              key: ${{ secrets.AWS_EC2_SSH_PRIVATE_KEY }}
+              username: ${{ env.EC2_REMOTE_USER }}
+              script: |
+                cd ./app-checkers/server/
+                touch .env
+                echo EXPRESS_PORT=3001 >> .env
+                echo HTTP_PORT=3002 >> .env
+                echo REDIS_HOST=${{ secrets.SERVER_REDIS_HOST }} >> .env
+                echo REDIS_PASSWORD=${{ secrets.SERVER_REDIS_PASSWORD }} >> .env
+                echo REDIS_PORT=${{ secrets.SERVER_REDIS_PORT }} >> .env
+                echo REDIS_USER=${{ secrets.SERVER_REDIS_USER }} >> .env
+                yarn cache clean && yarn install --frozen-lockfile
+                yarn build && npx pm2 restart server
